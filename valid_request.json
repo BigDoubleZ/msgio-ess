@@ -1,0 +1,6 @@
+{
+    "sender": "sender_A",
+    "to": ["bar@example.ru", "jar@example.ru"],
+    "subject": "Тема уведомления",
+    "message": "Текст уведомления"
+}
