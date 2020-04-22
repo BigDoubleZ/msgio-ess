@@ -16,6 +16,12 @@ import (
 	"github.com/streadway/amqp"
 )
 
+var (
+	cfgPageSize    = getEnvInt("ESS_PAGESIZE", 20)
+	cfgMaxPageSize = getEnvInt("ESS_MAXPAGESIZE", 1000)
+	cfgQueueName   = os.Getenv("MQ_QUEUE")
+)
+
 var reEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
 
 type ESSRequest struct {
@@ -64,6 +70,30 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
+func checkQueueConfig() {
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("[!] mq: Failed to create channel: %s", err)
+	}
+	defer ch.Close()
+
+	_, err = ch.QueueDeclare(cfgQueueName, false, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("[!] mq: Failed to declare a queue: %s", err)
+	}
+}
+
+func getEnvInt(field string, initial int) int {
+	if str, ok := os.LookupEnv(field); ok {
+		value, err := strconv.Atoi(str)
+		if err != nil {
+			return initial
+		}
+		return value
+	}
+	return initial
+}
+
 func failOnError(err error, msg string) {
 	if err != nil {
 		log.Fatalf("%s: %s", msg, err)
@@ -72,11 +102,11 @@ func failOnError(err error, msg string) {
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 	urlString := r.URL.String()
-	log.Printf("Request: [%s]", urlString)
 
 	found := false
 	for _, route := range routes {
 		if route.pattern.MatchString(urlString) {
+			log.Printf("[ ] api: Processing: [%s]", urlString)
 			route.handlerFunc(w, r)
 			found = true
 			break
@@ -84,7 +114,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		log.Println("Not found.")
+		log.Printf("[ ] api: Not found: [%s]", urlString)
 		http.Error(w, "Not found", http.StatusNotFound)
 	}
 }
@@ -120,7 +150,7 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 	ch.Confirm(false)
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation))
 
-	q, err := ch.QueueDeclare("ess", false, false, false, false, nil)
+	q, err := ch.QueueDeclare(cfgQueueName, false, false, false, false, nil)
 	if err != nil {
 		log.Printf("[!] mq: Failed to declare a queue: %s", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
@@ -147,8 +177,8 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 
 	if confirmed := <-confirms; confirmed.Ack {
 		log.Printf("[ ] mq: Sent %s", requestMsg.ID)
-		w.WriteHeader(http.StatusAccepted)
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprintf(w, `{"id": "%s"}`, requestMsg.ID)
 	} else {
 		log.Printf("[!] mq: Failed to publish message: %s", err)
@@ -163,18 +193,18 @@ func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 	id := args[0][1]
 
 	if len(id) < 32 {
-		log.Printf("[!] api: showMessage: impossible regex mismatch")
+		log.Printf("[!] api: showMessage: Impossible regex mismatch")
 		http.Error(w, "Server error", http.StatusInternalServerError)
 	}
 
 	msg, err := model.GetRecord(id)
 	if err != nil {
-		log.Printf("[!] api: showMessage: not found %s", err)
+		log.Printf("[!] api: showMessage: Not found %s", err)
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
-	log.Printf("%v", msg)
+	// log.Printf("%v", msg)
 
 	response, err := recordsToResponse([]*model.ESSRec{msg})
 	if err != nil {
@@ -183,34 +213,32 @@ func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "%s", response)
 }
 
 func showMessageList(w http.ResponseWriter, r *http.Request) {
-	log.Printf("showMessageList")
-
 	page, err := extractParam(r, "page", 1)
 	if err != nil {
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
 
-	pageSize, err := extractParam(r, "per_page", 20)
+	pageSize, err := extractParam(r, "per_page", cfgPageSize)
 	if err != nil {
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
 
-	if pageSize > 1000 {
-		log.Printf("[!] api: showMessageList: page size exceeds limit: %d", pageSize)
+	if pageSize > cfgMaxPageSize {
+		log.Printf("[!] api: showMessageList: Page size exceeds limit: %d", pageSize)
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
 
 	if pageSize < 1 {
-		log.Printf("[!] api: showMessageList: page size exceeds limit: %d", pageSize)
+		log.Printf("[!] api: showMessageList: Page size exceeds limit: %d", pageSize)
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
@@ -222,13 +250,26 @@ func showMessageList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Print(string(msgCount))
+	// log.Print(string(msgCount))
 
 	msgList, err := model.GetRecordList(pageSize, pageSize*(page-1))
 	if err != nil {
 		log.Printf("[!] api: showMessageList: Error getting message list")
 		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
+	}
+
+	maxPage := (msgCount / pageSize) + 1
+	w.Header().Set("X-Total", strconv.Itoa(msgCount))
+	w.Header().Set("X-Total-Pages", strconv.Itoa(maxPage))
+	w.Header().Set("X-Per-Page", strconv.Itoa(pageSize))
+	w.Header().Set("X-Page", strconv.Itoa(page))
+
+	if page+1 <= maxPage {
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+	}
+	if page > 1 {
+		w.Header().Set("X-Prev-Page", strconv.Itoa(page-1))
 	}
 
 	if len(msgList) < 1 {
@@ -244,20 +285,7 @@ func showMessageList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxPage := (msgCount / pageSize) + 1
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Total", strconv.Itoa(msgCount))
-	w.Header().Set("X-Total-Pages", strconv.Itoa(maxPage))
-	w.Header().Set("X-Per-Page", strconv.Itoa(pageSize))
-	w.Header().Set("X-Page", strconv.Itoa(page))
-
-	if page+1 <= maxPage {
-		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
-	}
-	if page > 1 {
-		w.Header().Set("X-Prev-Page", strconv.Itoa(page-1))
-	}
-
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "[%s]", response)
 }
@@ -283,21 +311,20 @@ func recordsToResponse(recList []*model.ESSRec) (string, error) {
 		}
 
 		parts = append(parts, string(chunk))
-		// response.Write(chunk)
-
 	}
 
 	return strings.Join(parts, ","), nil
 }
 
 func showAPISpecs(w http.ResponseWriter, r *http.Request) {
-	log.Printf("showAPISpecs")
+	log.Printf("[n] api: showAPISpecs: Not implemented")
+	http.Error(w, "Not implemented", http.StatusNotImplemented)
 	// send static api specs?
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not found", http.StatusNotFound)
 	log.Println("Not found")
+	http.Error(w, "Not found", http.StatusNotFound)
 }
 
 func prepareMessage(req *http.Request) (*ESSMessage, error) {
@@ -323,9 +350,6 @@ func prepareMessage(req *http.Request) (*ESSMessage, error) {
 	}
 
 	msg.ID = uuid.NewV4().String()
-
-	// fmt.Println(msg) // DBG
-
 	return msg, err
 }
 

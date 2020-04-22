@@ -9,6 +9,7 @@ import (
 	"mime"
 	"msgio-ess/model"
 	"net/mail"
+	"net/smtp"
 	"os"
 	"strings"
 
@@ -23,6 +24,14 @@ type ESSMessage struct {
 	Message string   `json:"message"`
 }
 
+var (
+	cfgSenderAddress  = os.Getenv("MAIL_SENDERADDRESS")
+	cfgServerURL      = os.Getenv("MAIL_SERVERURL")
+	cfgServerPort     = os.Getenv("MAIL_SERVERPORT")
+	cfgServerUser     = os.Getenv("MAIL_USER")
+	cfgServerPassword = os.Getenv("MAIL_PASSWORD")
+)
+
 var mqConn *amqp.Connection
 
 func main() {
@@ -30,13 +39,13 @@ func main() {
 	var err error
 	mqConn, err = amqp.Dial(os.Getenv("MQ_URL"))
 	if err != nil {
-		log.Fatalf("[f] Failed to connect to RabbitMQ: %s", err)
+		log.Fatalf("[f] mq: Failed to connect to RabbitMQ: %s", err)
 	}
 	defer mqConn.Close()
 
 	ch, err := mqConn.Channel()
 	if err != nil {
-		log.Fatalf("[f] Failed to open a channel: %s", err)
+		log.Fatalf("[f] mq: Failed to open a channel: %s", err)
 	}
 	defer ch.Close()
 
@@ -49,35 +58,29 @@ func main() {
 		nil,                   // arguments
 	)
 	if err != nil {
-		log.Fatalf("[f] Failed to declare a queue: %s", err)
+		log.Fatalf("[f] mq: Failed to declare a queue: %s", err)
 	}
 
 	err = ch.Qos(1, 0, false)
 	if err != nil {
-		log.Fatalf("[f] Failed to set QOS: %s", err)
+		log.Fatalf("[f] mq: Failed to set QOS: %s", err)
 	}
 
-	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		false,  // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
-	)
-	failOnError(err, "Failed to register a consumer")
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("[f] mq: Failed to register a consumer: %s", err)
+	}
 
 	forever := make(chan bool)
 
 	go func() {
 		for d := range msgs {
-			log.Printf("[ ] Received a message: %s", d.Body)
+			log.Printf("[ ] processing message: %s", d.Body)
 			dispatchMessage(d)
 		}
 	}()
 
-	log.Printf("[*] Waiting for messages. To exit press CTRL+C")
+	log.Printf("[*] Waiting for messages")
 
 	<-forever
 }
@@ -95,7 +98,7 @@ func dispatchMessage(msg amqp.Delivery) {
 	buf := bytes.NewBuffer(msg.Body)
 	err := json.NewDecoder(buf).Decode(&msgData)
 	if err != nil {
-		log.Println("[!] Error decoding message")
+		log.Println("[!] mq: Error decoding message", err)
 		msg.Ack(false)
 		return
 	}
@@ -118,7 +121,7 @@ func dispatchMessage(msg amqp.Delivery) {
 
 	fmt.Println(msgData)
 
-	from := mail.Address{Name: msgData.Sender, Address: "sender-no-reply@example.com"}
+	from := mail.Address{Name: msgData.Sender, Address: cfgSenderAddress}
 
 	header := make(map[string]string)
 	header["From"] = from.String()
@@ -135,26 +138,27 @@ func dispatchMessage(msg amqp.Delivery) {
 
 	log.Println(message) // DBG
 
-	// smtpServer := "smtp.msgio.com"
-	// auth := smtp.PlainAuth(
-	// 	"",
-	// 	"test@user",
-	// 	"testpassword",
-	// 	smtpServer,
-	// )
+	auth := smtp.PlainAuth(
+		"",
+		cfgServerUser,
+		cfgServerPassword,
+		cfgServerURL,
+	)
 
-	// err = smtp.SendMail(
-	// 	smtpServer+":25",
-	// 	auth,
-	// 	from.Address,
-	// 	[]string{to.Address},
-	// 	[]byte(message),
-	// )
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
+	err = smtp.SendMail(
+		cfgServerURL+":"+cfgServerPort,
+		auth,
+		from.Address,
+		msgData.To,
+		[]byte(message),
+	)
+	if err != nil {
+		log.Printf("[!] mail: Sending failed: %s", err)
+		return
+	}
 
 	if err = model.SetRecordSent(msgData.ID, true); err != nil {
 		log.Printf("[!] db: Error setting status: %s", err)
 	}
+	log.Printf("[*] mail: Sending completed: %s", msgData.ID)
 }
