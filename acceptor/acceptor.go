@@ -191,28 +191,14 @@ func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 func showMessageList(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showMessageList")
 
-	pageField, ok := r.URL.Query()["page"]
-	if !ok || len(pageField[0]) < 1 {
-		log.Printf("[!] api: showMessageList: Empty page parameter")
-		http.Error(w, "Wrong params", http.StatusBadRequest)
-		return
-	}
-	page, err := strconv.Atoi(pageField[0])
+	page, err := extractParam(r, "page", 1)
 	if err != nil {
-		log.Printf("[!] api: showMessageList: Invalid page parameter")
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
 
-	pageSizeField, ok := r.URL.Query()["per_page"]
-	if !ok || len(pageSizeField[0]) < 1 {
-		log.Printf("[!] api: showMessageList: Empty per_page parameter")
-		http.Error(w, "Wrong params", http.StatusBadRequest)
-		return
-	}
-	pageSize, err := strconv.Atoi(pageSizeField[0])
+	pageSize, err := extractParam(r, "per_page", 20)
 	if err != nil {
-		log.Printf("[!] api: showMessageList: Invalid page size parameter")
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
@@ -228,6 +214,15 @@ func showMessageList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Wrong params", http.StatusBadRequest)
 		return
 	}
+
+	msgCount, err := model.RecordCount()
+	if err != nil {
+		log.Printf("[!] api: showMessageList: Error getting message count")
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Print(string(msgCount))
 
 	msgList, err := model.GetRecordList(pageSize, pageSize*(page-1))
 	if err != nil {
@@ -249,7 +244,20 @@ func showMessageList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	maxPage := (msgCount / pageSize) + 1
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Total", strconv.Itoa(msgCount))
+	w.Header().Set("X-Total-Pages", strconv.Itoa(maxPage))
+	w.Header().Set("X-Per-Page", strconv.Itoa(pageSize))
+	w.Header().Set("X-Page", strconv.Itoa(page))
+
+	if page+1 <= maxPage {
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+	}
+	if page > 1 {
+		w.Header().Set("X-Prev-Page", strconv.Itoa(page-1))
+	}
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "[%s]", response)
 }
@@ -319,4 +327,21 @@ func prepareMessage(req *http.Request) (*ESSMessage, error) {
 	// fmt.Println(msg) // DBG
 
 	return msg, err
+}
+
+func extractParam(r *http.Request, name string, init int) (int, error) {
+	value := init
+
+	field, ok := r.URL.Query()[name]
+	if !ok || len(field[0]) < 1 {
+		log.Printf("[ ] api: extractParam: Empty [%s] parameter", name)
+		return value, nil
+	}
+	value, err := strconv.Atoi(field[0])
+	if err != nil {
+		log.Printf("[!] api: extractParam: Invalid [%s] parameter: [%s]", name, field[0])
+		return value, err
+	}
+
+	return value, nil
 }

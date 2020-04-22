@@ -105,6 +105,22 @@ func GetRecordList(limit int, offset int) ([]*ESSRec, error) {
 	return list, nil
 }
 
+func RecordCount() (int, error) {
+
+	db := connect()
+	defer db.Close()
+
+	var count int
+
+	const query = `select count(*) from records`
+
+	err := db.QueryRow(query).Scan(&count)
+	if err != nil {
+		return count, err
+	}
+	return count, nil
+}
+
 func SetRecordSent(id string, status bool) error {
 	db := connect()
 	defer db.Close()
