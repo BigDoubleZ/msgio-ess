@@ -15,7 +15,6 @@ import (
 	"github.com/streadway/amqp"
 )
 
-// ESSMessage - message recieved from MQ
 type ESSMessage struct {
 	ID      string   `json:"id"`
 	Sender  string   `json:"sender"`
@@ -105,7 +104,7 @@ func dispatchMessage(msg amqp.Delivery) {
 		ID:      msgData.ID,
 		Sender:  msgData.Sender,
 		Subject: msgData.Subject,
-		Message: msgData.Subject,
+		Message: msgData.Message,
 		To:      strings.Join(msgData.To, ":"),
 	}
 

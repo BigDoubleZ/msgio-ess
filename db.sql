@@ -3,10 +3,10 @@ create table records
 	id uuid not null
 		constraint records_pk
 			primary key,
-	created_at timestamp without time zone default now(),
-	sender text not null,
+	created_at timestamp(0) default now(),
+	sender text,
 	"to" text not null,
-	subject text not null,
+	subject text,
 	message text not null,
 	sent_status boolean default false
 );
@@ -18,6 +18,4 @@ create unique index records_id_uindex
 
 create index records_created
 	on records (created_at);
-
-
 

@@ -2,26 +2,49 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"msgio-ess/model"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 
 	uuid "github.com/satori/go.uuid"
 	"github.com/streadway/amqp"
 )
+
+var rxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
+
+type ESSRequest struct {
+	Sender  string   `json:"sender,ommitempty"`
+	To      []string `json:"to"`
+	Subject string   `json:"subject,ommitempty"`
+	Message string   `json:"message"`
+}
+
+type ESSMessage struct {
+	ID string
+	ESSRequest
+}
+
+type ESSResponse struct {
+	ID      string `json:"id"`
+	Created string `json:"created_at"`
+	Sent    string `json:"sent_status"`
+	ESSRequest
+}
 
 type routeConfig struct {
 	pattern     *regexp.Regexp
 	handlerFunc func(http.ResponseWriter, *http.Request)
 }
 
-type responseData map[string]interface{}
-
+var showMessageRe = regexp.MustCompile(`(?i)^/notifs/([0-9a-f]{8}\-([0-9a-f]{4}\-){3}[0-9a-f]{12})$`)
 var routes = []routeConfig{
 	{handlerFunc: acceptMessage, pattern: regexp.MustCompile(`^/notifs/$`)},
-	{handlerFunc: showMessageStatus, pattern: regexp.MustCompile(`^/notifs/(\d+)$`)},
+	{handlerFunc: showMessageStatus, pattern: showMessageRe},
 	{handlerFunc: showMessageList, pattern: regexp.MustCompile(`^/notifs/\?page=(\d+)(&per_page=(\d+))?$`)},
 	{handlerFunc: showAPISpecs, pattern: regexp.MustCompile(`^/notifs/docs$`)},
 	// {handlerFunc: notFound, pattern: regexp.MustCompile(`.*`)},
@@ -65,34 +88,23 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type essRequest map[string]interface{}
-
 func acceptMessage(w http.ResponseWriter, r *http.Request) {
-	log.Printf("acceptMessage")
 
 	if r.Method != "POST" {
+		log.Printf("[!] api: acceptMessage: Wrong method")
 		http.Error(w, "Wrong method", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if r.ContentLength == 0 {
+		log.Printf("[!] api: acceptMessage: Empty request body")
 		http.Error(w, "Empty request", http.StatusBadRequest)
 		return
 	}
 
-	requestData := essRequest{}
-	err := json.NewDecoder(r.Body).Decode(&requestData)
+	requestMsg, err := prepareMessage(r)
 	if err != nil {
-		http.Error(w, "Wrong request", http.StatusBadRequest)
-		return
-	}
-
-	requestData["id"] = uuid.NewV4()
-
-	fmt.Println(requestData)
-	requestMsg, err := json.Marshal(requestData)
-	if err != nil {
-		http.Error(w, "Error parsing request", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -114,26 +126,31 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO request validation
+	msg, err := json.Marshal(requestMsg)
+	if err != nil {
+		log.Printf("[!] mq: Error encodign message: %s", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	err = ch.Publish("", q.Name, false, false,
 		amqp.Publishing{
 			ContentType: "application/json",
-			Body:        []byte(requestMsg),
+			Body:        []byte(msg),
 		})
 	if err != nil {
 		log.Printf("[!] mq: Failed to declare a queue: %s", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[ ] mq: Sent %s", requestData["id"])
 
 	if confirmed := <-confirms; confirmed.Ack {
+		log.Printf("[ ] mq: Sent %s", requestMsg.ID)
 		w.WriteHeader(http.StatusAccepted)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(requestData)
+		fmt.Fprintf(w, `{"id": "%s"}`, requestMsg.ID)
 	} else {
-		log.Printf("[!] mq: Publish rejected: %s", err)
+		log.Printf("[!] mq: Failed to publish message: %s", err)
 		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
 	}
@@ -141,9 +158,45 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 
 func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showMessageStatus")
-	// validate id
-	// get message from db
-	// send response
+
+	args := showMessageRe.FindAllStringSubmatch(r.URL.String(), -1)
+
+	id := args[0][1]
+
+	if len(id) < 32 {
+		log.Printf("[!] api: showMessage: impossible regex mismatch")
+		http.Error(w, "Server error", http.StatusInternalServerError)
+	}
+
+	msg, err := model.GetRecord(id)
+	if err != nil {
+		log.Printf("[!] api: showMessage: not found %s", err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("%v", msg)
+
+	essr := ESSResponse{}
+	essr.ID = msg.ID
+	essr.Sender = msg.Sender
+	essr.Created = msg.Created
+	essr.Subject = msg.Subject
+	essr.Message = msg.Message
+	essr.Sent = msg.Sent
+
+	essr.To = strings.Split(msg.To, ":")
+
+	response, err := json.Marshal(essr)
+	if err != nil {
+		log.Printf("[!] api: showMessage: Error encoding message: %s", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, "%s", response)
 }
 
 func showMessageList(w http.ResponseWriter, r *http.Request) {
@@ -165,8 +218,31 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	log.Println("Not found")
 }
 
-// func sendResponse(w http.ResponseWriter, data responseData) {
-// 	w.Header().Set("Content-Type", "application/json")
-// 	w.WriteHeader(http.StatusOK)
-// 	json.NewEncoder(w).Encode(data)
-// }
+func prepareMessage(req *http.Request) (*ESSMessage, error) {
+
+	msg := new(ESSMessage)
+
+	err := json.NewDecoder(req.Body).Decode(msg)
+	if err != nil {
+		log.Printf("[!] req: Error parsing request: %s", err)
+		return nil, errors.New("Valid request expected")
+	}
+
+	if len(msg.To) < 1 {
+		log.Print("[!] req: Empty email list")
+		return nil, errors.New("Non-empty address list expected")
+	}
+
+	for _, email := range msg.To {
+		if len(email) > 254 || !rxEmail.MatchString(email) {
+			log.Print("[!] req: Invalid email address")
+			return nil, errors.New("Invalid email address")
+		}
+	}
+
+	msg.ID = uuid.NewV4().String()
+
+	// fmt.Println(msg) // DBG
+
+	return msg, err
+}

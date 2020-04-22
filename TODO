@@ -1,11 +1,12 @@
-ok - Подтверждение получения
-Валидация запроса, необязательные параметры
-Просмотр запроса
-Просмотр списка запросов, заголовки ответа
-Конфигурация через среду
-Отправка писем
+ok - mq ack
+ok - req validation, empty params
+ok - show message
 
-Логи
-Спецификация интерфеса (статическая?)
-Сборка для докера
+>> show message list
+read env parameters
+sending mail
+
+logs
+show api specs (static?)
+docker image
 

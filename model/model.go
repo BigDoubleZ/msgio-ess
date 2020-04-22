@@ -16,6 +16,8 @@ type ESSRec struct {
 	To      string
 	Subject string
 	Message string
+	Created string
+	Sent    string
 }
 
 func connect() *sql.DB {
@@ -46,7 +48,7 @@ func AddRecord(record ESSRec) error {
 }
 
 func GetRecord(id string) (*ESSRec, error) {
-	rec := new(ESSRec)
+	rec := ESSRec{}
 
 	db := connect()
 	defer db.Close()
@@ -54,7 +56,8 @@ func GetRecord(id string) (*ESSRec, error) {
 	const query = `select * from records where id = $1`
 
 	row := db.QueryRow(query, id)
-	err := row.Scan(rec.ID, rec.Sender, rec.To, rec.Subject, rec.Message)
+	err := row.Scan(&rec.ID, &rec.Created, &rec.Sender, &rec.To,
+		&rec.Subject, &rec.Message, &rec.Sent)
 
 	// switch err {
 	// case sql.ErrNoRows:
@@ -68,7 +71,7 @@ func GetRecord(id string) (*ESSRec, error) {
 	// 	return rec, err
 	// }
 
-	return rec, err
+	return &rec, err
 }
 
 func SetRecordSent(id string, status bool) error {
