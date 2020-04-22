@@ -1,12 +1,14 @@
 ok - mq ack
 ok - req validation, empty params
 ok - show message
+ok - show message list
 
->> show message list
-read env parameters
+>> read env parameters
 sending mail
+rearrange repo
 
 logs
+reconnect
 show api specs (static?)
 docker image
 

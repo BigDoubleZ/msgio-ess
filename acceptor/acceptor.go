@@ -9,13 +9,14 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	uuid "github.com/satori/go.uuid"
 	"github.com/streadway/amqp"
 )
 
-var rxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
+var reEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
 
 type ESSRequest struct {
 	Sender  string   `json:"sender,ommitempty"`
@@ -157,8 +158,6 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func showMessageStatus(w http.ResponseWriter, r *http.Request) {
-	log.Printf("showMessageStatus")
-
 	args := showMessageRe.FindAllStringSubmatch(r.URL.String(), -1)
 
 	id := args[0][1]
@@ -177,17 +176,7 @@ func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("%v", msg)
 
-	essr := ESSResponse{}
-	essr.ID = msg.ID
-	essr.Sender = msg.Sender
-	essr.Created = msg.Created
-	essr.Subject = msg.Subject
-	essr.Message = msg.Message
-	essr.Sent = msg.Sent
-
-	essr.To = strings.Split(msg.To, ":")
-
-	response, err := json.Marshal(essr)
+	response, err := recordsToResponse([]*model.ESSRec{msg})
 	if err != nil {
 		log.Printf("[!] api: showMessage: Error encoding message: %s", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -201,11 +190,96 @@ func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 
 func showMessageList(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showMessageList")
-	// validate params
-	// get list from db
-	// prepare headers
-	// send response
-	// send not found if none
+
+	pageField, ok := r.URL.Query()["page"]
+	if !ok || len(pageField[0]) < 1 {
+		log.Printf("[!] api: showMessageList: Empty page parameter")
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+	page, err := strconv.Atoi(pageField[0])
+	if err != nil {
+		log.Printf("[!] api: showMessageList: Invalid page parameter")
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+
+	pageSizeField, ok := r.URL.Query()["per_page"]
+	if !ok || len(pageSizeField[0]) < 1 {
+		log.Printf("[!] api: showMessageList: Empty per_page parameter")
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+	pageSize, err := strconv.Atoi(pageSizeField[0])
+	if err != nil {
+		log.Printf("[!] api: showMessageList: Invalid page size parameter")
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+
+	if pageSize > 1000 {
+		log.Printf("[!] api: showMessageList: page size exceeds limit: %d", pageSize)
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+
+	if pageSize < 1 {
+		log.Printf("[!] api: showMessageList: page size exceeds limit: %d", pageSize)
+		http.Error(w, "Wrong params", http.StatusBadRequest)
+		return
+	}
+
+	msgList, err := model.GetRecordList(pageSize, pageSize*(page-1))
+	if err != nil {
+		log.Printf("[!] api: showMessageList: Error getting message list")
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+
+	if len(msgList) < 1 {
+		log.Printf("[ ] api: showMessageList: Empty message list")
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	response, err := recordsToResponse(msgList)
+	if err != nil {
+		log.Printf("[!] api: showMessage: Error encoding message: %s", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "[%s]", response)
+}
+
+func recordsToResponse(recList []*model.ESSRec) (string, error) {
+
+	parts := make([]string, 0, len(recList))
+
+	for _, rec := range recList {
+		essr := ESSResponse{}
+		essr.ID = rec.ID
+		essr.Sender = rec.Sender
+		essr.Created = rec.Created
+		essr.Subject = rec.Subject
+		essr.Message = rec.Message
+		essr.Sent = rec.Sent
+
+		essr.To = strings.Split(rec.To, ":")
+
+		chunk, err := json.Marshal(essr)
+		if err != nil {
+			return "", err
+		}
+
+		parts = append(parts, string(chunk))
+		// response.Write(chunk)
+
+	}
+
+	return strings.Join(parts, ","), nil
 }
 
 func showAPISpecs(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +308,7 @@ func prepareMessage(req *http.Request) (*ESSMessage, error) {
 	}
 
 	for _, email := range msg.To {
-		if len(email) > 254 || !rxEmail.MatchString(email) {
+		if len(email) > 254 || !reEmail.MatchString(email) {
 			log.Print("[!] req: Invalid email address")
 			return nil, errors.New("Invalid email address")
 		}

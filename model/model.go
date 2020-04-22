@@ -74,6 +74,37 @@ func GetRecord(id string) (*ESSRec, error) {
 	return &rec, err
 }
 
+func GetRecordList(limit int, offset int) ([]*ESSRec, error) {
+
+	var list []*ESSRec
+
+	db := connect()
+	defer db.Close()
+
+	const query = `select * from records order by created_at, id asc limit $1 offset $2`
+
+	rows, err := db.Query(query, limit, offset)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return list, nil
+		}
+		return list, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		rec := ESSRec{}
+		err := rows.Scan(&rec.ID, &rec.Created, &rec.Sender, &rec.To,
+			&rec.Subject, &rec.Message, &rec.Sent)
+		if err != nil {
+			return list, err
+		}
+		list = append(list, &rec)
+	}
+
+	return list, nil
+}
+
 func SetRecordSent(id string, status bool) error {
 	db := connect()
 	defer db.Close()
