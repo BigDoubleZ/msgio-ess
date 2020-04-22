@@ -6,39 +6,62 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
+	"msgio-ess/model"
 	"net/mail"
+	"os"
 	"strings"
 
 	"github.com/streadway/amqp"
 )
 
-var conn *amqp.Connection
+// ESSMessage - message recieved from MQ
+type ESSMessage struct {
+	ID      string   `json:"id"`
+	Sender  string   `json:"sender"`
+	To      []string `json:"to"`
+	Subject string   `json:"subject"`
+	Message string   `json:"message"`
+}
+
+var mqConn *amqp.Connection
 
 func main() {
 
 	var err error
-	conn, err = amqp.Dial("amqp://test:test@localhost:5672")
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+	mqConn, err = amqp.Dial(os.Getenv("MQ_URL"))
+	if err != nil {
+		log.Fatalf("[f] Failed to connect to RabbitMQ: %s", err)
+	}
+	defer mqConn.Close()
 
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
+	ch, err := mqConn.Channel()
+	if err != nil {
+		log.Fatalf("[f] Failed to open a channel: %s", err)
+	}
 	defer ch.Close()
 
 	q, err := ch.QueueDeclare(
-		"ess", // name
-		false, // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		os.Getenv("MQ_QUEUE"), // name
+		false,                 // durable
+		false,                 // delete when unused
+		false,                 // exclusive
+		false,                 // no-wait
+		nil,                   // arguments
 	)
-	failOnError(err, "Failed to declare a queue")
+	if err != nil {
+		log.Fatalf("[f] Failed to declare a queue: %s", err)
+	}
+
+	err = ch.Qos(1, 0, false)
+	if err != nil {
+		log.Fatalf("[f] Failed to set QOS: %s", err)
+	}
 
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
-		true,   // auto-ack
+		false,  // auto-ack
 		false,  // exclusive
 		false,  // no-local
 		false,  // no-wait
@@ -50,14 +73,14 @@ func main() {
 
 	go func() {
 		for d := range msgs {
-			log.Printf("Received a message: %s", d.Body)
+			log.Printf("[ ] Received a message: %s", d.Body)
 			dispatchMessage(d)
 		}
 	}()
 
-	log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
-	<-forever
+	log.Printf("[*] Waiting for messages. To exit press CTRL+C")
 
+	<-forever
 }
 
 func failOnError(err error, msg string) {
@@ -66,20 +89,52 @@ func failOnError(err error, msg string) {
 	}
 }
 
-type essRequest map[string]interface{}
-
 func dispatchMessage(msg amqp.Delivery) {
 
-	msgData := essRequest{}
+	msgData := ESSMessage{}
 
 	buf := bytes.NewBuffer(msg.Body)
 	err := json.NewDecoder(buf).Decode(&msgData)
 	if err != nil {
-		log.Println("[!] Error decoding acceptor message")
+		log.Println("[!] Error decoding message")
+		msg.Ack(false)
 		return
 	}
 
+	rec := model.ESSRec{
+		ID:      msgData.ID,
+		Sender:  msgData.Sender,
+		Subject: msgData.Subject,
+		Message: msgData.Subject,
+		To:      strings.Join(msgData.To, ":"),
+	}
+
+	if err := model.AddRecord(rec); err != nil {
+		log.Printf("[!] db: Failed to store record: %s", err)
+		msg.Ack(false)
+		return
+	}
+
+	msg.Ack(true)
+
 	fmt.Println(msgData)
+
+	from := mail.Address{Name: msgData.Sender, Address: "sender-no-reply@example.com"}
+
+	header := make(map[string]string)
+	header["From"] = from.String()
+	header["Subject"] = mime.BEncoding.Encode("utf-8", msgData.Subject)
+	header["MIME-Version"] = "1.0"
+	header["Content-Type"] = "text/plain; charset=\"utf-8\""
+	header["Content-Transfer-Encoding"] = "base64"
+
+	message := ""
+	for field, val := range header {
+		message += fmt.Sprintf("%s: %s\r\n", field, val)
+	}
+	message += "\r\n" + base64.StdEncoding.EncodeToString([]byte(msgData.Message))
+
+	log.Println(message) // DBG
 
 	// smtpServer := "smtp.msgio.com"
 	// auth := smtp.PlainAuth(
@@ -88,25 +143,6 @@ func dispatchMessage(msg amqp.Delivery) {
 	// 	"testpassword",
 	// 	smtpServer,
 	// )
-
-	from := mail.Address{Name: "sender", Address: "noreply@sender.com"}
-	// to := mail.Address{Name: "test address", Address: "noreply@sender.com"}
-
-	header := make(map[string]string)
-	header["From"] = from.String()
-	// header["To"] = to.String()
-	header["Subject"] = encodeRFC2047("subject string")
-	header["MIME-Version"] = "1.0"
-	header["Content-Type"] = "text/plain; charset=\"utf-8\""
-	header["Content-Transfer-Encoding"] = "base64"
-
-	message := ""
-	for k, v := range header {
-		message += fmt.Sprintf("%s: %s\r\n", k, v)
-	}
-	message += "\r\n" + base64.StdEncoding.EncodeToString([]byte("message text"))
-
-	log.Println(message)
 
 	// err = smtp.SendMail(
 	// 	smtpServer+":25",
@@ -119,9 +155,7 @@ func dispatchMessage(msg amqp.Delivery) {
 	// 	log.Fatal(err)
 	// }
 
-}
-
-func encodeRFC2047(str string) string {
-	addr := mail.Address{Address: str}
-	return strings.Trim(addr.String(), " <>")
+	if err = model.SetRecordSent(msgData.ID, true); err != nil {
+		log.Printf("[!] db: Error setting status: %s", err)
+	}
 }

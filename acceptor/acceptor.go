@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 
 	uuid "github.com/satori/go.uuid"
@@ -31,7 +32,7 @@ var conn *amqp.Connection
 func main() {
 
 	var err error // FIXME make mq dealer
-	conn, err = amqp.Dial("amqp://test:test@localhost:5672")
+	conn, err = amqp.Dial(os.Getenv("MQ_URL"))
 	failOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 
@@ -86,7 +87,7 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestData["id"] = uuid.Must(uuid.NewV4()) // FIXME panic possible
+	requestData["id"] = uuid.NewV4()
 
 	fmt.Println(requestData)
 	requestMsg, err := json.Marshal(requestData)
@@ -95,53 +96,68 @@ func acceptMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn == nil {
-		log.Printf("Connection is nil")
-	}
-
 	ch, err := conn.Channel()
-	failOnError(err, "Failed to create channel")
+	if err != nil {
+		log.Printf("[!] mq: Failed to create channel: %s", err)
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+	defer ch.Close()
 
-	q, err := ch.QueueDeclare(
-		"ess", // name
-		false, // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	failOnError(err, "Failed to declare a queue")
+	ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation))
+
+	q, err := ch.QueueDeclare("ess", false, false, false, false, nil)
+	if err != nil {
+		log.Printf("[!] mq: Failed to declare a queue: %s", err)
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
 
 	// TODO request validation
 
-	err = ch.Publish(
-		"",     // exchange
-		q.Name, // routing key
-		false,  // mandatory
-		false,  // immediate
+	err = ch.Publish("", q.Name, false, false,
 		amqp.Publishing{
 			ContentType: "application/json",
 			Body:        []byte(requestMsg),
 		})
+	if err != nil {
+		log.Printf("[!] mq: Failed to declare a queue: %s", err)
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[ ] mq: Sent %s", requestData["id"])
 
-	log.Printf(" [x] Sent %s", requestMsg)
-	failOnError(err, "Failed to publish a message")
-
-	w.WriteHeader(http.StatusAccepted)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(requestData)
+	if confirmed := <-confirms; confirmed.Ack {
+		w.WriteHeader(http.StatusAccepted)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(requestData)
+	} else {
+		log.Printf("[!] mq: Publish rejected: %s", err)
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func showMessageStatus(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showMessageStatus")
+	// validate id
+	// get message from db
+	// send response
 }
 
 func showMessageList(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showMessageList")
+	// validate params
+	// get list from db
+	// prepare headers
+	// send response
+	// send not found if none
 }
 
 func showAPISpecs(w http.ResponseWriter, r *http.Request) {
 	log.Printf("showAPISpecs")
+	// send static api specs?
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
