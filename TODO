@@ -5,9 +5,7 @@ ok - show message list
 ok - read env parameters
 ok - sending mail
 
-rearrange repo
-
-logs
+* - logs
 reconnect
 show api specs (static?)
 docker image

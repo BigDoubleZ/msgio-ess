@@ -1,14 +1,25 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/joho/godotenv"
 )
+
+func TestMain(m *testing.M) {
+	err := godotenv.Load("../.env")
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+	// call flag.Parse() here if TestMain uses flags
+	os.Exit(m.Run())
+}
 
 func Test_NotFound(t *testing.T) {
 
@@ -63,47 +74,30 @@ func Test_AcceptMsg_WrongRequestFormat(t *testing.T) {
 	}
 }
 
-func Test_AcceptMsg_ValidRequest(t *testing.T) {
+// func Test_AcceptMsg_ValidRequest(t *testing.T) {
 
-	params := map[string]interface{}{
-		"sender":  "sender_A",
-		"to":      []string{"bar@example.ru", "jar@example.ru"},
-		"subject": "Тема уведомления",
-		"message": "Текст уведомления",
-	}
+// 	params := map[string]interface{}{
+// 		"sender":  "sender_A",
+// 		"to":      []string{"bar@example.ru", "jar@example.ru"},
+// 		"subject": "Тема уведомления",
+// 		"message": "Текст уведомления",
+// 	}
 
-	body, _ := json.Marshal(params)
+// 	body, _ := json.Marshal(params)
 
-	req, err := http.NewRequest("POST", "/notifs/",
-		bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(mainHandler)
-
-	handler.ServeHTTP(rr, req)
-	if status := rr.Code; status != http.StatusAccepted {
-		t.Errorf("handler returned wrong status code: got %v want %v",
-			status, http.StatusAccepted)
-	}
-}
-
-// func TestGetEntryByIDNotFound(t *testing.T) {
-// 	req, err := http.NewRequest("GET", "/entry", nil)
+// 	req, err := http.NewRequest("POST", "/notifs/",
+// 		bytes.NewReader(body))
 // 	if err != nil {
 // 		t.Fatal(err)
 // 	}
-// 	q := req.URL.Query()
-// 	q.Add("id", "123")
-// 	req.URL.RawQuery = q.Encode()
+
 // 	rr := httptest.NewRecorder()
-// 	handler := http.HandlerFunc(notFound)
+// 	handler := http.HandlerFunc(mainHandler)
+
 // 	handler.ServeHTTP(rr, req)
-// 	if status := rr.Code; status == http.StatusOK {
+// 	if status := rr.Code; status != http.StatusAccepted {
 // 		t.Errorf("handler returned wrong status code: got %v want %v",
-// 			status, http.StatusBadRequest)
+// 			status, http.StatusAccepted)
 // 	}
 // }
 

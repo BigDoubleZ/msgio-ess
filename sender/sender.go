@@ -36,6 +36,8 @@ var mqConn *amqp.Connection
 
 func main() {
 
+	model.Setup()
+
 	var err error
 	mqConn, err = amqp.Dial(os.Getenv("MQ_URL"))
 	if err != nil {

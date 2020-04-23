@@ -61,10 +61,16 @@ var conn *amqp.Connection
 
 func main() {
 
+	model.Setup()
+
 	var err error // FIXME make mq dealer
 	conn, err = amqp.Dial(os.Getenv("MQ_URL"))
-	failOnError(err, "Failed to connect to RabbitMQ")
+	if err != nil {
+		log.Fatalf("[!] mq: Failed to dial: %s", err)
+	}
 	defer conn.Close()
+
+	checkQueueConfig()
 
 	http.HandleFunc("/notifs/", mainHandler)
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -81,6 +87,7 @@ func checkQueueConfig() {
 	if err != nil {
 		log.Fatalf("[!] mq: Failed to declare a queue: %s", err)
 	}
+	log.Printf("[*] mq: connected")
 }
 
 func getEnvInt(field string, initial int) int {

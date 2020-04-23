@@ -8,8 +8,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-var dbh *sql.DB
-
 type ESSRec struct {
 	ID      string
 	Sender  string
@@ -20,24 +18,28 @@ type ESSRec struct {
 	Sent    string
 }
 
+var db *sql.DB
+
+func Setup() {
+	db = connect()
+}
+
 func connect() *sql.DB {
-	db, err := sql.Open("postgres", os.Getenv("PG_DSN"))
+	dbh, err := sql.Open("postgres", os.Getenv("PG_DSN"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("[f] db: Error connecting: %s", err)
 	}
 
-	err = db.Ping()
+	err = dbh.Ping()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("[f] db: Ping failed: %s", err)
 	}
 
-	return db
+	log.Printf("[*] db: connected")
+	return dbh
 }
 
 func AddRecord(record ESSRec) error {
-	db := connect()
-	defer db.Close()
-
 	const query = `insert into records ("id", "sender", "to", "subject", "message") 
 		values ($1, $2, $3, $4, $5)`
 
@@ -48,40 +50,21 @@ func AddRecord(record ESSRec) error {
 }
 
 func GetRecord(id string) (*ESSRec, error) {
-	rec := ESSRec{}
-
-	db := connect()
-	defer db.Close()
-
 	const query = `select * from records where id = $1`
+
+	rec := ESSRec{}
 
 	row := db.QueryRow(query, id)
 	err := row.Scan(&rec.ID, &rec.Created, &rec.Sender, &rec.To,
 		&rec.Subject, &rec.Message, &rec.Sent)
 
-	// switch err {
-	// case sql.ErrNoRows:
-	// 	fmt.Println("No rows")
-	// 	return rec, nil
-
-	// case nil:
-	// 	return rec, nil
-
-	// default:
-	// 	return rec, err
-	// }
-
 	return &rec, err
 }
 
 func GetRecordList(limit int, offset int) ([]*ESSRec, error) {
+	const query = `select * from records order by created_at, id asc limit $1 offset $2`
 
 	var list []*ESSRec
-
-	db := connect()
-	defer db.Close()
-
-	const query = `select * from records order by created_at, id asc limit $1 offset $2`
 
 	rows, err := db.Query(query, limit, offset)
 	if err != nil {
@@ -106,13 +89,8 @@ func GetRecordList(limit int, offset int) ([]*ESSRec, error) {
 }
 
 func RecordCount() (int, error) {
-
-	db := connect()
-	defer db.Close()
-
-	var count int
-
 	const query = `select count(*) from records`
+	var count int
 
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
@@ -122,9 +100,6 @@ func RecordCount() (int, error) {
 }
 
 func SetRecordSent(id string, status bool) error {
-	db := connect()
-	defer db.Close()
-
 	const query = `update records set sent_status = $2 where id = $1`
 
 	_, err := db.Exec(query, id, status)
