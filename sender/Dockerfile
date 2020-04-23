@@ -9,5 +9,4 @@ FROM scratch
 COPY --from=0 /go/src/msgio-ess/bin/sender /sender
 CMD ["/sender"]
 
-# msgio-ess $
-# sudo docker build -t ess-sender -f sender/Dockerfile .
+# : msgio-ess$ sudo docker build -t ess-sender -f sender/Dockerfile .
