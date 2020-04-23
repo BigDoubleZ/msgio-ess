@@ -2,9 +2,9 @@ ok - mq ack
 ok - req validation, empty params
 ok - show message
 ok - show message list
+ok - read env parameters
+ok - sending mail
 
->> read env parameters
-sending mail
 rearrange repo
 
 logs
